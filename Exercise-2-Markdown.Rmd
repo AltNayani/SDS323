@@ -1,0 +1,844 @@
+---
+title: "Exercise 2 - SDS323"
+author: "Alt Nayani and Conor McKinley"
+date: "3/13/2020"
+output: 
+  pdf_document
+sansfont: Calibri Light
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+```
+
+```{r Libraries,echo=FALSE, warning=FALSE, message=FALSE}
+### Load Libraries 
+set.seed(1)
+library(readr)
+library(mosaic)
+library(tidyverse)
+library(rmarkdown)
+library(FNN)
+library(tinytex)
+library(foreach)
+library(gridExtra)
+library(grid)
+library(png)
+library(downloader)
+library(grDevices)
+library(corrplot)
+library(grid)
+library(gridExtra)
+library(scales)
+library(knitr)
+library(kableExtra)
+
+### Some Housekeeping Code
+options(scipen = 10)
+
+```
+
+
+(1) KNN Practice
+==================
+
+Question: How does the relationship of mileage on price level change given different trim models? To be able to answer this question we will look specifically  at the Mercedes S Class vehicles. 
+
+
+Let us begin by first analyzing the general relationship of mileage on price levels without any regard to specific trim models.  
+```{r SClass Graphs, echo = FALSE, fig.height = 4.2, fig.width = 4.2, fig.align = 'center'}
+
+
+### Load Data
+Question1url = 'https://raw.githubusercontent.com/jgscott/SDS323/master/data/sclass.csv'
+SClass = read.csv(url(Question1url))
+
+ggplot(data = SClass) + 
+  geom_point(mapping = aes(x = mileage, y = price), color = 'lightgrey', size = 0.5) +
+  theme_bw(base_size = 10) + 
+  labs(title = 'Raw Relationship Between Mileage and Price for \n all Mercades S Class Vehicles', 
+       x = 'Mileage', 
+       y = 'Price ($)', 
+       caption = 'Figure 1: Data contained over 29,000 vehicles that were advertised on the secondary automobile \n market during 2014') + 
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8)) 
+  
+```
+
+The relationship is an exponential decay relationship in which as mileage on a car increases, the price of the car drops off significantly. 
+
+Now lets analyze two specific trim levels: the 350 and 65 AMG. As seen below both trim levels follow a similar exponential decay pattern. An interesting observation for the 350 Trim is the clustering into two different groups. 
+
+```{r SClass Specific Trim Graphs, echo = FALSE, fig.height = 2.5, fig.width = 4.2, fig.align = 'center'}
+
+SClass350 = subset(SClass, trim == '350')
+SClass65AMG = subset(SClass, trim == '65 AMG')
+
+initalplot350 = ggplot(data = SClass350) + 
+  geom_point(mapping = aes(x = mileage, y = price), color = 'lightgrey', size = 0.5) +
+  theme_bw(base_size = 10) + 
+  labs(title = 'Relationship Between Mileage and Price for \n Mercades S Class 350', 
+       x = 'Mileage', 
+       y = 'Price ($)') + 
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 6.5),
+        axis.title.x = element_text(face = 'bold', size = 6), 
+        axis.title.y = element_text(face = 'bold', size = 6), 
+        axis.text = element_text(size = 6)) 
+
+initalplot65AMG = ggplot(data = SClass65AMG) + 
+  geom_point(mapping = aes(x = mileage, y = price), color = 'lightgrey', size = 0.5) +
+  theme_bw(base_size = 10) + 
+  labs(title = 'Relationship Between Mileage and Price for \n Mercades S Class 65 AMG', 
+       x = 'Mileage', 
+       y = 'Price ($)') + 
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 6.5),
+        axis.title.x = element_text(face = 'bold', size = 6), 
+        axis.title.y = element_text(face = 'bold', size = 6), 
+        axis.text = element_text(size = 6)) 
+
+grid.arrange(initalplot350, initalplot65AMG, ncol=2)
+```
+
+To be able to quantify the impact of mileage on price, a regression is the obvious choice. Given the non-linear relationship of mileage on price and the clustering of specific values in certain trim levels, a K-nearest-neighbors regression could be used. 
+
+To determine which K value should be used, we should attempt to minimize the out of sample root squared mean error (RMSE). Below is a plot of K values and their associated out of sample RMSE for the 350 ad 65 AMG Trim Levels.
+
+```{r ErrorGrids, echo = FALSE, fig.height = 2.5, fig.width = 4.2, fig.align = 'center'}
+
+# Split into Train-Test 
+N350 = nrow(SClass350)
+N350train = floor(.8*N350)
+N350test = N350-N350train
+
+N65AMG = nrow(SClass65AMG)
+N65AMGtrain = floor(.8*N65AMG)
+N65AMGtest = N65AMG-N65AMGtrain
+
+# Define function
+rmse = function(y, ypred) {
+  sqrt(mean(data.matrix((y-ypred)^2)))
+}
+
+# Loop different K values for 350 Trim
+kgrid350 = seq(3, N350train, by = 1)
+err_grid350 = foreach(k = kgrid350, .combine='c') %do% {
+  out350 = do(100)*{
+    
+    # Randomly Sample a Set of Data Points to include in the training set 
+    indtrain_350 = sample.int(N350, N350train, replace = FALSE)
+    
+    # Define split
+    train_350 = SClass350[indtrain_350,]
+    test_350 = SClass350[-indtrain_350,]
+    
+    # Re-Arrange
+    test_350 = arrange(test_350, mileage)
+    
+    # Seperate into Training and Test 
+    xtrain_350 = select(train_350, mileage)
+    xtest_350 = select(test_350, mileage)
+    ytrain_350 = select(train_350, price)
+    ytest_350 = select(test_350, price)
+    
+    # Run a KNN regression
+    knn = knn.reg(train = xtrain_350, test = xtest_350, y = ytrain_350, k = k)
+    
+    # Find RMSE error
+    rmse(ytest_350, knn$pred)
+  }
+  mean(out350$result, na.rm = TRUE)
+}
+
+# Loop different K values for 65 AMG 
+kgrid65AMG = seq(3, N65AMGtrain, by = 1)
+err_grid65AMG = foreach(k = kgrid65AMG, .combine='c') %do% {
+  out65AMG = do(100)*{
+    
+    # Randomly Sample a Set of Data Points to include in the training set 
+    indtrain_65AMG = sample.int(N65AMG, N65AMGtrain, replace = FALSE)
+    
+    # Define split
+    train_65AMG = SClass65AMG[indtrain_65AMG,]
+    test_65AMG = SClass65AMG[-indtrain_65AMG,]
+    
+    # Re-Arrange
+    test_65AMG = arrange(test_65AMG, mileage)
+    
+    # Seperate into Training and Test 
+    xtrain_65AMG = select(train_65AMG, mileage)
+    xtest_65AMG = select(test_65AMG, mileage)
+    ytrain_65AMG = select(train_65AMG, price)
+    ytest_65AMG = select(test_65AMG, price)
+    
+    # Run a KNN regression
+    knn = knn.reg(train = xtrain_65AMG, test = xtest_65AMG, y = ytrain_65AMG, k = k)
+    
+    # Find RMSE error
+    rmse(ytest_65AMG, knn$pred)
+  }
+  mean(out65AMG$result, na.rm = TRUE)
+}
+
+# Clean Up some data
+err_350df = data.frame(cbind(kgrid350, err_grid350))
+err_65AMGdf = data.frame(cbind(kgrid65AMG, err_grid65AMG))
+
+# Find optimal K for 350 Trim
+min350 = which.min(err_350df[,2])
+minK350 = err_350df[min350,1]
+
+# Find Optimal K for 65 AMG Trim
+min65AMG = which.min(err_65AMGdf[,2])
+minK65AMG = err_65AMGdf[min65AMG,1]
+
+# Plot of RMSE vs. K for 350 trim
+errorplot350 = ggplot(data = err_350df) + 
+  geom_point(mapping = aes(x = kgrid350, y = err_grid350), color = 'grey', size = 1) +
+  theme_bw() + 
+  labs(title = 'K Values v. RMSE for 350 Trim', 
+       x = 'K values', 
+       y = 'RMSE') + 
+  theme(plot.title = element_text(face = 'bold.italic', size = 6.8), 
+        axis.title = element_text(size = 6, face = 'bold'), 
+        axis.text = element_text(size = 6)) + 
+  geom_point(data = err_350df[min350,], mapping = aes(x = kgrid350, y = err_grid350), color = 'red', size = 2)
+
+# Plot of RMSE v. K for 65AMG Trim 
+errorplot65AMG = ggplot(data = err_65AMGdf) + 
+  geom_point(mapping = aes(x = kgrid65AMG, y = err_grid65AMG), color = 'grey', size = 1) +
+  theme_bw() + 
+  labs(title = 'K Values v. RMSE for 65 AMG Trim', 
+       x = 'K values', 
+       y = 'RMSE') + 
+  theme(plot.title = element_text(face = 'bold.italic', size = 6.8), 
+        axis.title = element_text(size = 6, face = 'bold'), 
+        axis.text = element_text(size = 6)) + 
+  geom_point(data = err_65AMGdf[min65AMG,], mapping = aes(x = kgrid65AMG, y = err_grid65AMG), color = 'red', size = 2)
+
+grid.arrange(errorplot350, errorplot65AMG, ncol=2)
+```
+
+The lowest RMSE value is highlighted. For the 350 Trim a K value of 13 produced an RMSE of 9,892 and for the 65 AMG Trim a K value of 8 produced an RMSE of 20,432. 
+
+Now that we know the K value that produces the lowest error, we can run a K-nearest-neighbor model with the given K. Below are the plots after the KNN model (tested on the training data) is fitted to the testing data. 
+
+First is for the 350 Trim Level:
+
+```{r 350KNN Model, echo = FALSE, fig.height = 4.2, fig.width = 4.2, fig.align = 'center'}
+
+# Fitted Model Plot 
+knnfitted350 = knn.reg(train = xtrain_350, test = xtest_350, y = ytrain_350, k = minK350)
+test_350$fitted = knnfitted350$pred
+
+ggplot(data = test_350) + 
+  geom_point(mapping = aes(x = mileage, y = price), color = 'lightgrey') + 
+  theme_bw(base_size = 18)+
+  geom_line(mapping = aes(x = mileage, y = fitted), color = 'red', size = 1.5)  + 
+  labs(title = 'Fitted KNN Model (k = 13) of Mileage on Price for 350 Trim', 
+       x = 'Mileage', 
+       y = 'Price ($)')+
+  theme(plot.title = element_text(face = 'bold.italic', size = 8.5), 
+        axis.title = element_text(face = 'bold', size = 6), 
+        axis.text = element_text(size = 6))
+```
+
+Then for the 65 AMG Trim Level:
+
+```{r 65AMGKNN Model, echo = FALSE, fig.height = 4.2, fig.width = 4.2, fig.align = 'center'}
+
+# Fitted Model Plot
+knnfitted65AMG = knn.reg(train = xtrain_65AMG, test = xtest_65AMG, y = ytrain_65AMG, k = minK65AMG)
+test_65AMG$fitted = knnfitted65AMG$pred
+
+ggplot(data = test_65AMG) + 
+  geom_point(mapping = aes(x = mileage, y = price), color = 'lightgrey') + 
+  theme_bw(base_size = 18) +
+  geom_line(mapping = aes(x = mileage, y = fitted), color = 'red', size = 1.5) +
+  labs(title = 'Fitted KNN Model (k = 8) of Mileage on Price for 65 AMG Trim', 
+       x = 'Mileage', 
+       y = 'Price ($)')+
+  theme(plot.title = element_text(face = 'bold.italic', size = 8.5), 
+        axis.title = element_text(face = 'bold', size = 6), 
+        axis.text = element_text(size = 6))
+```
+
+Conclusion: Based on the given models above, we can now determine a price for the car knowing the mileage of the car for the 350 and 65 AMG trims. The model performs significantly better for the 350 trim than the 65 AMG (approximately 106% better). The underlying cause behind such a wide discrepancy is the clustering in the 350 Trim. Running a KNN model with clustering in the dataset provides more accurate predictions when running on the testing data, because the clusters provide relatively close predictions for the given vehicles. Furthermore, the overall data in the 350 trim seems to be more compact than the wide spread of the 65 AMG trim. In general, this would also produce a better prediction model for the 350 trim. 
+
+
+(2) Saratoga House Prices
+=========================
+
+Question: How do we best determine the fair value of a house to appropriately collect the relevant taxes? 
+
+Our current model uses an array of factors such as lot size, age, living area, percent of college residents, number of bedrooms, fireplaces, bathrooms, rooms, type of heating, fuel type, and the existence of a central air system. 
+
+While our current model performs adequately, there has been discussions to attempt to create a better model since it would provide a greater accuracy of the true tax liability and thus decrease the chances of the tax department being over/under paid. 
+
+To determine the best factors to place into the model, lets first focus on the relationship between our variable of interest, price, and other quantitative features. 
+
+```{r saratogahouseintitalrelationship, echo = FALSE, fig.height = 4, fig.width = 4, fig.align = 'center'}
+# Question 2
+# Load Data
+data(SaratogaHouses)
+
+# House Keeping Code 
+n = nrow(SaratogaHouses)
+n_train = round(0.8*n)
+n_test = n - n_train
+
+# Split into training and testing data
+train_cases = sample.int(n, n_train, replace=FALSE)
+test_cases = setdiff(1:n, train_cases)
+saratoga_train = SaratogaHouses[train_cases,]
+saratoga_test = SaratogaHouses[test_cases,]
+
+# View Initial Relationship between Price and Different Features 
+pricelotsize = ggplot(saratoga_train) + 
+  geom_point(mapping = aes(x = lotSize, y = price), color = 'black', size = 1) +
+  labs(x = 'Lot Size', 
+       y = 'Price ($)') +
+  theme(axis.title = element_text(face = 'bold', size = 4), 
+        axis.text = element_text(size = 4)) +
+  theme_bw()
+
+priceage = ggplot(saratoga_train) + 
+  geom_point(mapping = aes(x = age, y = price), color = 'black', size = 1) +
+  labs(x = 'Age', 
+       y = 'Price ($)') +
+  theme(axis.title = element_text(face = 'bold', size = 4), 
+        axis.text = element_text(size = 4)) +
+  theme_bw()
+
+pricelivingarea = ggplot(saratoga_train) + 
+  geom_point(mapping = aes(x = livingArea, y = price), color = 'black', size = 1) +
+  labs(x = 'Living Area (sq.ft)', 
+       y = 'Price ($)') +
+  theme(axis.title = element_text(face = 'bold', size = 4), 
+        axis.text = element_text(size = 4)) +
+  theme_bw()
+  
+pricepctcollege = ggplot(saratoga_train) + 
+  geom_point(mapping = aes(x = pctCollege, y = price), color = 'black', size = 1) +
+  labs(x = '% College', 
+       y = 'Price ($)') +
+  theme(axis.title = element_text(face = 'bold', size = 4), 
+        axis.text = element_text(size = 4)) + 
+  theme_bw()
+
+pricebedrooms = ggplot(saratoga_train) + 
+  geom_point(mapping = aes(x = bedrooms, y = price), color = 'black', size = 1) +
+  labs(x = 'Bedrooms', 
+       y = 'Price ($)') +
+  theme(axis.title = element_text(face = 'bold', size = 4), 
+        axis.text = element_text(size = 4)) +
+  theme_bw()
+
+pricefireplace = ggplot(saratoga_train) + 
+  geom_point(mapping = aes(x = fireplaces, y = price), color = 'black', size = 1) +
+  labs(x = 'Fireplaces', 
+       y = 'Price ($)') +
+  theme(axis.title = element_text(face = 'bold', size = 4), 
+        axis.text = element_text(size = 4)) +
+  theme_bw()
+
+pricebathrooms = ggplot(saratoga_train) + 
+  geom_point(mapping = aes(x = bathrooms, y = price), color = 'black', size = 1) +
+  labs(x = 'Bathrooms', 
+       y = 'Price ($)') +
+  theme(axis.title = element_text(face = 'bold', size = 4), 
+        axis.text = element_text(size = 4)) + 
+  theme_bw()
+
+pricerooms = ggplot(saratoga_train) + 
+  geom_point(mapping = aes(x = rooms, y = price), color = 'black', size = 1) +
+  labs(x = 'Rooms', 
+       y = 'Price ($)') +
+  theme(axis.title = element_text(face = 'bold', size = 1), 
+        axis.text = element_text(size = 1)) +
+  theme_bw()
+
+grid.arrange(pricelotsize, priceage, pricelivingarea, pricepctcollege, pricebedrooms, pricefireplace, pricebathrooms, pricerooms, ncol = 3, 
+             top = textGrob('Relationship between Price and House Features', gp=gpar(fontsize = 8, font = 3)))
+```
+
+We can quickly visualize which features are correlated with price. However, to be able to quantify these relationships, a correlation matrix is needed. 
+
+```{r saratogacorrelations, echo = FALSE, fig.height = 4.2, fig.width = 4.2, fig.align = 'center'}
+# View relationship between numerical features 
+corSaratoga = cor(saratoga_train[,1:10])
+corrplot(corSaratoga, method = 'shade', addrect = 2, number.font = 3, tl.cex = 0.5, cl.cex = 0.5)
+```
+
+Now to create a model based on the features that are most correlated with price. Using forward selection, a model was determined fit to best minimize error in the testing data using the correlated features. Below are the features and formula of the model generated:
+
+```{r forwardselectionmodel1, echo = FALSE, fig.height = 3, fig.width = 3, fig.align = 'center', results=FALSE}
+# Generate Model using Forward Selection
+lm_null = lm(price ~ 1, data = saratoga_train)
+lm_handmade = step(lm_null, direction = 'forward', 
+                    scope = ~(lotSize + age + livingArea + pctCollege + bedrooms + fireplaces + bathrooms + rooms + heating + fuel + centralAir + sewer + newConstruction + waterfront)^2)
+```
+
+```{r getCallSaratoga, echo = FALSE, fig.height = 3, fig.width = 3, fig.align = 'center'}
+# So what is our model 
+getCall(lm_handmade)
+```
+
+The handmade model was then compared to the current baseline model. Overall, the handmade model produced better RMSE results both relatively and absolutely, which can be seen below. 
+```{r absoluterelative, echo = FALSE, fig.height = 4, fig.width = 4, fig.align = 'center', warning=FALSE}
+rmse_vals = do(100)*{
+  
+  # Split into training and testing data
+  train_cases = sample.int(n, n_train, replace=FALSE)
+  test_cases = setdiff(1:n, train_cases)
+  saratoga_train = SaratogaHouses[train_cases,]
+  saratoga_test = SaratogaHouses[test_cases,]
+  
+  # Baseline Model
+  lm_medium = lm(price ~ lotSize + age + livingArea + pctCollege + bedrooms + 
+                 fireplaces + bathrooms + rooms + heating + fuel + centralAir, data=saratoga_train)
+  
+  # Predictions Out of Sample
+  yhat_test_medium = predict(lm_medium, saratoga_test)
+  yhat_test_handmade = predict(lm_handmade, saratoga_test)
+  
+  # RMSE Values
+  c(rmse(saratoga_test$price, yhat_test_medium), rmse(saratoga_test$price, yhat_test_handmade))
+}
+
+# How it did, on average
+colnames(rmse_vals) = c('Baseline', 'Handmade')
+kable((colMeans(rmse_vals)), caption = 'Average RMSE of Each Model') %>% 
+  kable_styling(latex_options = c('striped', 'hold_position'))
+
+#How much better: relatively and absolutely
+relativegain = (mean(rmse_vals$Baseline/rmse_vals$Handmade) - 1)
+absolutegain = mean(rmse_vals$Baseline-rmse_vals$Handmade)
+
+kable(percent(relativegain, accuracy = 0.01), caption = 'Relative Benefit of Handmade \n Model v. Baseline Model') %>% 
+  kable_styling(latex_options = c('striped', 'hold_position'))
+
+kable(round(absolutegain, 0), caption = 'Absolute Benefit of Handmade \n Model v. Baseline Model') %>% 
+  kable_styling(latex_options = c('striped', 'hold_position'))
+```
+
+Furthermore, the boxplot allows us to determine that the handmade model generated a lower RMSE and a lower variation of the error values. This idea is reinforced by viewing the respective error probability distribution functions of each model. 
+
+A current problem we are facing with our current model is the large variation of differences in the true v. predicted values of the house (especially in the tails) but the handmade model on average has a lower kurtosis than the baseline model, minimizing instances of extreme over/under valuation. 
+
+```{r resultssaratoga, echo = FALSE, fig.height = 4, fig.width = 4, fig.align = 'center', warning=FALSE}
+
+# Plot Results
+# Boxplot
+boxplot(rmse_vals,
+        col = c("lightblue", "darkgreen"), 
+        xlab = 'Models', 
+        ylab = 'Root Mean Sqaured Error', 
+        main = 'Root Mean Squared Error by Model')
+
+# PDF
+ggplot(data = rmse_vals) + 
+  geom_density(mapping = aes(x = rmse_vals$Handmade), color = 'red', fill = 'red', alpha = 0.5) + 
+  geom_density(mapping = aes(x = rmse_vals$Baseline), color = 'blue', fill = 'blue', alpha = 0.5) + 
+  xlim(45000, 85000) +
+  theme_bw() + 
+  labs(title = 'Probability Density Functions of Baseline v. Handmade Model', 
+       y = 'Density', 
+       x = 'Root Mean Squared Error Value') +
+  theme(axis.title = element_text(face = 'bold', size = 8), 
+        axis.text = element_text(size = 6),
+        plot.title = element_text(face = 'bold.italic', size = 8.5), 
+        legend.position = 'right')
+
+```
+
+While the handmade model performed well, it was recommended we attempt to use the a K-nearest-neighbors model with the handmade models feature.
+
+```{r saratgoaKNN, echo = FALSE, fig.height = 4, fig.width = 4, fig.align = 'center', warning=FALSE}
+set.seed(50)
+factors = dplyr::select(SaratogaHouses, livingArea, bathrooms, age, lotSize, rooms, bedrooms, price)
+factors = na.omit(data.frame(factors))
+
+y = factors$price
+n = length(y)
+
+n_train = round(0.8*n)
+n_test = n - n_train
+
+train_ind = sample.int(n, n_train)
+X_train = factors[train_ind,]
+X_test = factors[-train_ind,]
+Y_train = y[train_ind]
+Y_test = y[-train_ind]
+
+scale_factors = apply(X_train, 2, sd)
+X_train_sc = scale(X_train, scale=scale_factors)
+X_test_sc = scale(X_test, scale=scale_factors)
+
+k_knn_grid = seq(2, 100, by=1)
+err_knn_grid = foreach(k = k_knn_grid, .combine = 'c') %do% {
+  out = do(100)*{
+    k = 2
+    train_ind = sample.int(n, n_train)
+    X_train = factors[train_ind,]
+    X_test = factors[-train_ind,]
+    Y_train = y[train_ind]
+    Y_test = y[-train_ind]
+
+    scale_factors = apply(X_train, 2, sd)
+    X_train_sc = scale(X_train, scale=scale_factors)
+    X_test_sc = scale(X_test, scale=scale_factors)
+    
+    knn_try = knn.reg(train = X_train_sc, test = X_test_sc, y = Y_train, k = k)
+
+    
+    rmse(Y_test, knn_try$pred)
+  }
+  mean(out$result)
+}
+err_df = data.frame(cbind(k_knn_grid, err_knn_grid))
+
+minK = which.min(err_df$err_knn_grid)
+minerror = err_df[minK,2]
+
+# Plot of RMSE vs. K for 350 trim
+errorplot = ggplot(data = err_df) + 
+  geom_point(mapping = aes(x = k_knn_grid, y = err_knn_grid), color = 'grey', size = 1) +
+  theme_bw() + 
+  labs(title = 'K Values v. RMSE', 
+       x = 'K values', 
+       y = 'RMSE') + 
+  theme(plot.title = element_text(face = 'bold.italic', size = 6.8), 
+        axis.title = element_text(size = 6, face = 'bold'), 
+        axis.text = element_text(size = 6)) + 
+  geom_point(data = err_df[minK,], mapping = aes(x = k_knn_grid, y = err_knn_grid), color = 'red', size = 2)
+errorplot
+```
+
+The KNN model performed even better than the handmade model. The best KNN model was determined with k=58 and produced an RMSE value of under 27,000. The implication of such a great model is our abilities to tax an appropriate amount based on a fair estimate of the underlying house. While there may be concern that the model performance was based on chance, it should be noted that the model was tested with 100 random simulations and thus we can assume the model does in fact produce reliable results. 
+
+(3) Viral Articles by Mashable
+==============================
+
+Mashable is a digital media and entertainment company whose main revenue driver comes from ads. As expected, a viral article posted will generate greater ad revenue as opposed to non-viral posts. Therefore, Mashable is interested in the ability to improve an article's probability of reaching viral status. 
+
+Mashable has provided us with online articles published between 2013 and 2014 with a list of features of each article. The question posed to us is: What features best determine viral status on an article and does this improve chances of a new article becoming viral?
+
+To best determine how much an article will be shared, we must determine which features best are correlated with shares (both positive and negative). Below is a correlation matrix of the features of interest. 
+```{r importdata, echo = FALSE, fig.height = 4, fig.width = 4, fig.align = 'center'}
+## Load Data
+online_news_url = 'https://raw.githubusercontent.com/jgscott/SDS323/master/data/online_news.csv'
+online_news = read.csv(url(online_news_url))
+
+set.seed(100)
+
+# Select Key Factors
+variablesnews = dplyr::select(online_news, n_tokens_title, n_tokens_content, num_hrefs, num_self_hrefs, num_imgs, num_videos, num_keywords, weekday_is_monday, weekday_is_tuesday, weekday_is_wednesday, weekday_is_thursday, weekday_is_friday, weekday_is_saturday, weekday_is_sunday, shares)
+variablesnews = na.omit(data.frame(variablesnews))
+
+y_news = variablesnews$shares
+n_news = length(y_news)
+
+# Initial Train/Test Split
+n_train_news = round(0.8*n_news)
+n_test_news = n_news - n_train_news
+
+# Correlation Plot
+newscor = cor(variablesnews)
+corrplot(newscor, method = 'shade', addrect = 2, number.font = 3, tl.cex = 0.5, cl.cex = 0.5)
+
+# Loop Housekeeping Code
+iterations = 1
+in_sample_accuracy = matrix(NA, 2, iterations)
+out_sample_accuracy = matrix(NA, 2, iterations)
+error_rate = matrix(NA, 4, iterations)
+tpr = matrix(NA, 4, iterations)
+fpr = matrix(NA, 4, iterations)
+fdr = matrix(NA, 4, iterations)
+```
+
+```{r forwardselectionmodel, echo = FALSE, fig.height = 3, fig.width = 3, fig.align = 'center', results=FALSE}
+# Loop
+for (i in 1:iterations){
+  train_news = sort(sample.int(n_news, floor(0.8*n_news)))
+  test_news = setdiff(1:n_news, train_news)
+  
+  X_train_news = variablesnews[train_news,]
+  X_test_news = variablesnews[test_news,]
+  Y_train_news = y_news[train_news]
+  Y_test_news = y_news[test_news]
+  
+  
+  # Handmade Model - Linear 
+  handmadenewsmodel1 = lm(shares ~ n_tokens_title + n_tokens_content + num_hrefs + num_self_hrefs + num_imgs + num_videos + num_keywords, data = data.frame(X_train_news))
+  
+  # Confusion Matrix - In Sample Performance 
+  phat_train_news = predict(handmadenewsmodel1, X_train_news)
+  yhat_train_news = ifelse(phat_train_news >= 1400, 1, 0)
+  X_train_news$sharesbinary = ifelse(X_train_news$shares >= 1400, 1, 0)
+  
+  confusion_handmade_in = table(y=X_train_news$sharesbinary, yhat=yhat_train_news)
+  # In Sample Accuracy 
+  in_sample_accuracy[1,i] = sum(diag(confusion_handmade_in))/sum(confusion_handmade_in)
+  # Error Rate 
+  error_rate[1,i] = 1-sum(diag(confusion_handmade_in))/sum(confusion_handmade_in)
+  # True Positive Rate
+  tpr[1,i] = confusion_handmade_in[2,2]/(sum(confusion_handmade_in[2,]))
+  # False Positive Rate 
+  fpr[1,i] = confusion_handmade_in[1,2]/sum(confusion_handmade_in[1,])
+  # False Discovery Rate 
+  fdr[1,i] = confusion_handmade_in[1,2]/sum(confusion_handmade_in[,2])
+  
+  # Confusion Matrix - Out of Sample Performance 
+  yhatnews = ifelse(predict(handmadenewsmodel1, newdata = X_test_news) >= 1400, 1, 0)
+  X_test_news$sharesbinary = ifelse(X_test_news$shares>=1400, 1, 0)
+  confusionmatrix_handmade1 = table(X_test_news$sharesbinary, yhatnews)
+  # Out of Sample Accuracy
+  out_sample_accuracy[1,i] = sum(diag(confusionmatrix_handmade1))/sum(confusionmatrix_handmade1)
+  # Error Rate
+  error_rate[2,i] = 1-sum(diag(confusionmatrix_handmade1))/sum(confusionmatrix_handmade1)
+  # True Positive Rate
+  tpr[2,i] = confusionmatrix_handmade1[2,2]/(sum(confusionmatrix_handmade1[2,]))
+  # False Positive Rate 
+  fpr[2,i] = confusionmatrix_handmade1[1,2]/sum(confusionmatrix_handmade1[1,])
+  # False Discovery Rate 
+  fdr[2,i] = confusionmatrix_handmade1[1,2]/sum(confusionmatrix_handmade1[,2])
+  
+  # Forward Selection Model - Using Interactions 
+  nullnewsmodel = lm(shares~ 1, data = data.frame(X_train_news))
+  forwardnewsmodel = step(nullnewsmodel, direction = 'forward', 
+                          scope = ~(n_tokens_title + n_tokens_content + num_hrefs + num_self_hrefs + 
+                                      num_imgs + num_videos + num_keywords + weekday_is_monday + 
+                                      weekday_is_tuesday + weekday_is_wednesday + weekday_is_thursday + 
+                                      weekday_is_friday + weekday_is_saturday + weekday_is_sunday)^2)
+  
+  # Confusion Matrix - In Sample Performance 
+  phat_train_forward = predict(forwardnewsmodel, X_train_news)
+  yhat_train_forward = ifelse(phat_train_forward >= 1400, 1, 0)
+  X_train_news$sharesbinary = ifelse(X_train_news$shares >= 1400, 1, 0)
+  
+  confusionmatrix_forward_in = table(y = X_train_news$sharesbinary, yhat = yhat_train_forward)
+  # In Sample Accuracy
+  in_sample_accuracy[2,i] = sum(diag(confusionmatrix_forward_in))/sum(confusionmatrix_forward_in)
+  # Error Rate 
+  error_rate[3,i] = 1-sum(diag(confusionmatrix_forward_in))/sum(confusionmatrix_forward_in)
+  # True Positive Rate
+  tpr[3,i] = confusionmatrix_forward_in[2,2]/(sum(confusionmatrix_forward_in[2,]))
+  # False Positive Rate 
+  fpr[3,i] = confusionmatrix_forward_in[1,2]/sum(confusionmatrix_forward_in[1,])
+  # False Discovery Rate 
+  fdr[3,i] = confusionmatrix_forward_in[1,2]/sum(confusionmatrix_forward_in[,2])
+  
+  # Confusion Matrix - Out of Sample Performance 
+  yhatnews_forward = ifelse(predict(forwardnewsmodel, newdata = X_test_news) >= 1400, 1, 0)
+  X_test_news$sharesbinary = ifelse(X_test_news$shares>=1400,1, 0)
+  
+  confusionmatrix_forward = table(X_test_news$sharesbinary, yhatnews_forward)
+  # Out of Sample Accuracy 
+  out_sample_accuracy[2,i] = sum(diag(confusionmatrix_forward))/sum(confusionmatrix_forward)
+  # Error Rate
+  error_rate[4,i] = 1-sum(diag(confusionmatrix_forward))/sum(confusionmatrix_forward)
+  # True Positive Rate
+  tpr[4,i] = confusionmatrix_forward[2,2]/(sum(confusionmatrix_forward[2,]))
+  # False Positive Rate 
+  fpr[4,i] = confusionmatrix_forward[1,2]/sum(confusionmatrix_forward[1,])
+  # False Discovery Rate 
+  fdr[4,i] = confusionmatrix_forward[1,2]/sum(confusionmatrix_forward[,2])
+}
+```
+
+We created two model: a linear handmade model and an interaction-forward selection model that changes dynamically based on the training data. Both models use linear regression to predict the amount of shares of an article and then classified into viral or not based on more than 1400 shares. Below are the result of the models (both in and out of sample). 
+
+
+```{r avg_Results, echo = FALSE, fig.height = 5, fig.width = 5, fig.align = 'center', fig.pos='H'}
+# Avg. from Different Iterations
+avg_isa = rowMeans(in_sample_accuracy)
+avg_osa = rowMeans(out_sample_accuracy)
+
+avg_er = rowMeans(error_rate)
+avg_tpr = rowMeans(tpr)
+avg_fpr = rowMeans(fpr)
+avg_fdr = rowMeans(fdr)
+
+# In Sample v. Out of Sample Accuracy
+table1 = data.frame(avg_isa, avg_osa)
+colnames(table1) = c('Average In-Sample Accuracy', 'Average Out-Sample Accuracy')
+rownames(table1) = c('Handmade Model', 'Forward Selection Model')
+kable(round(table1, 3), caption = 'In Sample v. Out of Sample Accuracy') %>% 
+  kable_styling(latex_options = c('striped', 'hold_position'))
+
+# Error Rates
+table2 = data.frame(avg_er, avg_tpr, avg_fpr, avg_fdr)
+colnames(table2) = c('Average Error Rate', 'Average True Positive Rate', 'False Positive Rate', 'False Discovery Rate')
+rownames(table2) = c('Handmade Model - In Sample', 'Handmade - Out of Sample', 'Forward Selection Model - In Sample', 'Forward Selection Model - Out of Sample')
+
+kable(round(table2, 3), caption = 'Model Performance Metrics \n In Sample and Out of Sample') %>% 
+  kable_styling(latex_options =c("scale_down", "striped", "hold_position"))
+```
+
+Now these model are compared to a null model - a model that predicts 'viral' regardless of features. Below are the results for null model. 
+
+```{r nullmodel, echo = FALSE, fig.height = 4, fig.width = 4, fig.align = 'center', fig.pos='H'}
+# Create Null Model that Predicts Viral Everytime
+#table(X_train_news$sharesbinary)
+
+# Out of Sample Test 
+nullconfusion = table(X_test_news$sharesbinary)
+nullresults = nullconfusion[2]/sum(table(X_test_news$sharesbinary)) # Does about the same
+nulltable = data.frame(nullresults)
+colnames(nulltable) = 'Out of Sample Accuracy'
+rownames(nulltable) = 'Null Model'
+kable(round(nulltable, 3), caption = 'Null Model Performance') %>% 
+  kable_styling(latex_options = c('striped', 'hold_position'))
+```
+
+
+The out-of-sample accuracy of the null model actually predicts viral status better than the handmade and forward selection models. Therefore, both models should not be used by Mashable as a predictor to determine viral status. 
+
+Now, rather then creating a model then adding a threshold to determine viral based on more of 1400 shares, we will classify viral (binary 0 or 1) then regress on certain features. 
+
+Again, we will generate two models: a handmade model and a forward selection model. However, both will be regressed on a binary outcome of viral status. Below are the results for both the models. 
+
+
+```{r glmloop, echo = FALSE, fig.height = 5, fig.width = 5, fig.align = 'center', results=FALSE}
+##### Part 2 ####
+variablesnews = dplyr::select(online_news, n_tokens_title, n_tokens_content, num_hrefs, num_self_hrefs, num_imgs, num_videos, num_keywords, weekday_is_monday, weekday_is_tuesday, weekday_is_wednesday, weekday_is_thursday, weekday_is_friday, weekday_is_saturday, weekday_is_sunday, shares)
+variablesnews = na.omit(data.frame(variablesnews))
+variablesnews$viral = ifelse(variablesnews$shares > 1400, 1, 0)
+y_news = variablesnews$viral
+n_news = length(y_news)
+
+# Initial Train/Test Split
+n_train_news = round(0.8*n_news)
+n_test_news = n_news - n_train_news
+
+# Loop Housekeeping Code
+in_sample_accuracy_glm = matrix(NA, 2, iterations)
+out_sample_accuracy_glm = matrix(NA, 2, iterations)
+error_rate_glm = matrix(NA, 4, iterations)
+tpr_glm = matrix(NA, 4, iterations)
+fpr_glm = matrix(NA, 4, iterations)
+fdr_glm = matrix(NA, 4, iterations)
+
+# Loop
+for (i in 1:iterations){
+  train_news_viral = sort(sample.int(n_news, floor(0.8*n_news)))
+  test_news_viral = setdiff(1:n_news, train_news_viral)
+  
+  X_train_news_viral = variablesnews[train_news_viral,]
+  X_test_news_viral = variablesnews[test_news_viral,]
+  Y_train_news_viral = y_news[train_news_viral]
+  Y_test_news_viral = y_news[test_news_viral]
+  
+  # Handmade Model 
+  handmademodelglm = glm(viral ~ n_tokens_title + n_tokens_content + num_hrefs + num_self_hrefs + num_imgs + num_videos + num_keywords, data = data.frame(X_train_news_viral))
+  
+  # Handmade - In Sample
+  phat_train_news_viral = predict(handmademodelglm, X_train_news_viral)
+  yhat_train_news_viral = ifelse(phat_train_news_viral >= 0.5, 1, 0)
+  confusion_handmadeviral = table(y=X_train_news_viral$viral, yhat=yhat_train_news_viral)
+  confusion_handmadeviral
+  
+  # In Sample Accuracy 
+  in_sample_accuracy_glm[1, i] = sum(diag(confusion_handmadeviral))/sum(confusion_handmadeviral)
+  # Error Rate 
+  error_rate_glm[1,i] = 1-sum(diag(confusion_handmadeviral))/sum(confusion_handmadeviral)
+  # True Positive Rate
+  tpr_glm[1,i] = confusion_handmadeviral[2,2]/(sum(confusion_handmadeviral[2,]))
+  # False Positive Rate 
+  fpr_glm[1,i] = confusion_handmadeviral[1,2]/sum(confusion_handmadeviral[1,])
+  # False Discovery Rate 
+  fdr_glm[1,i] = confusion_handmadeviral[1,2]/sum(confusion_handmadeviral[,2])
+  
+  
+  # Handmade - Out of Sample
+  yhat_handmade_viral = ifelse(predict(handmademodelglm, newdata = X_test_news_viral) >= 0.5, 1, 0)
+  X_test_news_viral$sharesbinary = ifelse(X_test_news$shares>=1400,1, 0)
+  confusion_handmadeviralos = table(y=X_test_news_viral$viral, yhat = yhat_handmade_viral)
+  confusion_handmadeviralos
+  
+  # Out of Sample Accuracy 
+  out_sample_accuracy_glm[1,i] = sum(diag(confusion_handmadeviralos))/sum(confusion_handmadeviralos)
+  # Error Rate
+  error_rate_glm[2,i] = 1-sum(diag(confusion_handmadeviralos))/sum(confusion_handmadeviralos)
+  # True Positive Rate
+  tpr_glm[2,i] = confusion_handmadeviralos[2,2]/(sum(confusion_handmadeviralos[2,]))
+  # False Positive Rate 
+  fpr_glm[2,i] = confusion_handmadeviralos[1,2]/sum(confusion_handmadeviralos[1,])
+  # False Discovery Rate 
+  fdr_glm[2,i] = confusion_handmadeviralos[1,2]/sum(confusion_handmadeviralos[,2])
+  
+  # Forward Selection - glm 
+  nullglm = glm(viral ~ 1, data = X_train_news_viral)
+  forwardglm = step(nullglm, direction = 'forward', 
+                    scope = ~(n_tokens_title + n_tokens_content + num_hrefs + num_self_hrefs + 
+                                num_imgs + num_videos + num_keywords + weekday_is_monday + 
+                                weekday_is_tuesday + weekday_is_wednesday + weekday_is_thursday + 
+                                weekday_is_friday + weekday_is_saturday + weekday_is_sunday)^2)
+  
+  
+  # Forward - In Sample
+  phat_train_news_viral_glm = predict(forwardglm, X_train_news_viral)
+  yhat_train_news_viral_glm = ifelse(phat_train_news_viral_glm >= 0.5, 1, 0)
+  confusion_viral_glm = table(y=X_train_news_viral$viral, yhat=yhat_train_news_viral_glm)
+  
+  # In Sample Accuracy 
+  in_sample_accuracy_glm[2, i] = sum(diag(confusion_viral_glm))/sum(confusion_viral_glm)
+  # Error Rate 
+  error_rate_glm[3,i] = 1-sum(diag(confusion_viral_glm))/sum(confusion_viral_glm)
+  # True Positive Rate
+  tpr_glm[3,i] = confusion_viral_glm[2,2]/(sum(confusion_viral_glm[2,]))
+  # False Positive Rate 
+  fpr_glm[3,i] = confusion_viral_glm[1,2]/sum(confusion_viral_glm[1,])
+  # False Discovery Rate 
+  fdr_glm[3,i] =confusion_viral_glm[1,2]/sum(confusion_viral_glm[,2])
+  
+  
+  # Forward - Out of Sample
+  yhat_handmade_viral_glm = ifelse(predict(forwardglm, newdata = X_test_news_viral) >= 0.5, 1, 0)
+  X_test_news_viral$sharesbinary = ifelse(X_test_news$shares>=1400,1, 0)
+  confusion_viral_glmos = table(y=X_test_news_viral$viral, yhat = yhat_handmade_viral_glm)
+  
+  # Out of Sample Accuracy 
+  out_sample_accuracy_glm[2,i] = sum(diag(confusion_viral_glmos))/sum(confusion_viral_glmos)
+  # Error Rate
+  error_rate_glm[4,i] = 1-sum(diag(confusion_viral_glmos))/sum(confusion_viral_glmos)
+  # True Positive Rate
+  tpr_glm[4,i] = confusion_viral_glmos[2,2]/(sum(confusion_viral_glmos[2,]))
+  # False Positive Rate 
+  fpr_glm[4,i] = confusion_viral_glmos[1,2]/sum(confusion_viral_glmos[1,])
+  # False Discovery Rate 
+  fdr_glm[4,i] = confusion_viral_glmos[1,2]/sum(confusion_viral_glmos[,2])
+}
+```
+
+```{r glmresults, echo = FALSE, fig.height = 5, fig.width = 5, fig.align = 'center', fig.pos='H'}
+# Avg. from Different Iterations
+avg_isa_glm = rowMeans(in_sample_accuracy_glm)
+avg_osa_glm = rowMeans(out_sample_accuracy_glm)
+
+avg_er_glm = rowMeans(error_rate_glm)
+avg_tpr_glm = rowMeans(tpr_glm)
+avg_fpr_glm = rowMeans(fpr_glm)
+avg_fdr_glm = rowMeans(fdr_glm)
+
+# In Sample v. Out of Sample Accuracy
+table1_glm = data.frame(avg_isa_glm, avg_osa_glm)
+colnames(table1_glm) = c('Average In-Sample Accuracy', 'Average Out-Sample Accuracy')
+rownames(table1_glm) = c('Handmade Model', 'Forward Selection Model')
+kable(round(table1_glm, 3), caption = 'In Sample v. Out of Sample Accuracy')%>% 
+  kable_styling(latex_options = c('striped', 'hold_position'))
+
+# Error Rates
+table2_glm = data.frame(avg_er_glm, avg_tpr_glm, avg_fpr_glm, avg_fdr_glm)
+colnames(table2_glm) = c('Average Error Rate', 'Average True Positive Rate', 'False Positive Rate', 'False Discovery Rate')
+rownames(table2_glm) = c('Handmade Model - In Sample', 'Handmade - Out of Sample', 'Forward Selection Model - In Sample', 'Forward Selection Model - Out of Sample')
+kable(round(table2_glm, 3),  caption = 'Model Performance Metrics \n In Sample and Out of Sample')%>% 
+  kable_styling(latex_options=c("scale_down", 
+                "striped", "hold_position"))
+```
+
+
+As seen above, the classification model does significantly better than the handmade model, linear forward selection model and the null model by producing better results with in and out of sample accuracy, true positive rates, false positive rates, and false discovery rates. Therefore, we can conclude the classification model approach is better. The logistic classification model performs better due to the nature of the outcome. Since our purpose was to determine viral status of an article (binary outcome), using a linear regression (with the assumption of continuous data) would not be sufficient in determining a yes/no response. However, if we run a binomial logistic regression model, we are rather forcing a placement within the yes and no bucket. 
