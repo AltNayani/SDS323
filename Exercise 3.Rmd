@@ -1,0 +1,471 @@
+---
+title: "Exercise 3"
+author: "Alt Nayani and Conor McKinley"
+date: "4/23/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+```
+
+```{r Libraries,echo=FALSE, warning=FALSE, message=FALSE}
+### Load Libraries 
+library(readr)
+library(mosaic)
+library(tidyverse)
+library(rmarkdown)
+library(FNN)
+library(tinytex)
+library(foreach)
+library(gridExtra)
+library(grid)
+library(png)
+library(downloader)
+library(grDevices)
+library(corrplot)
+library(grid)
+library(gridExtra)
+library(scales)
+library(knitr)
+library(kableExtra)
+library(stats)
+library(LICORS)
+library(cluster)
+library(fpc)
+library(factoextra)
+options(scipen = 10)
+
+# Housekeeping Code
+options(scipen = 10)
+set.seed(100)
+
+# Functions
+rmse = function(y, ypred) {
+  sqrt(mean(data.matrix((y-ypred)^2)))
+}
+```
+
+
+(1) Predictive Model Building - Green Rating 
+============================================
+
+Question: What is the effect of a green rating (i.e LEED or EnergyStar Certified) on the rent that can be charged of the occupants?
+
+This question has many implications such as if a building owner should incur additional costs to recieve a green rating in hopes for an increased rent rate. 
+
+Let us first begin by looking at the raw green v. non-green rated buildings. 
+
+```{r Green Inital Graph, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center'}
+
+# Load data 
+greenbuildingsurl = 'https://raw.githubusercontent.com/jgscott/SDS323/master/data/greenbuildings.csv'
+greenbuildings = read.csv(url(greenbuildingsurl))
+
+# Look at initial summaries for green v. nongreen buildings 
+greenbuildingsinit <- greenbuildings %>% 
+  group_by(green_rating) %>% 
+  summarize(mean_rent = mean(Rent, na.rm = TRUE))
+
+ggplot(data = greenbuildingsinit, mapping = aes(x = green_rating, y = mean_rent)) +
+  geom_col(fill = 'skyblue', color = 'black') +
+  labs(title = "Average Rent Based on Green Rating of Building",
+       x = "Green Rating", 
+       y = "Average Rent ($)", 
+       caption = 'Left Bar is non-green rated buildings \n Right Bar is green-rated buildings') + 
+  theme_bw() + 
+  theme(axis.text.x = element_blank(), 
+        plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8))
+```
+
+While the initial bar graph shows an increased rent price for green rated buildings, there are many potential cofounding variables such as green rated buildings are usually newer and located in better areas. Therefore, we must isolate the effect of the green rated buildings. 
+
+To do this we have tried two different methods: linear regression using forward selection and Principle Components Analysis (PCA). 
+
+First is the linear regression. Below can be found the fitted model:
+
+```{r forwardselectionmodel, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', results=FALSE}
+# To determine the best predictive model try forward selection regression
+# Split into training and testing data 
+n = nrow(greenbuildings)
+n_train = round(0.8*n)
+n_test = n - n_train
+
+train_cases = sample.int(n, n_train, replace=FALSE)
+test_cases = setdiff(1:n, train_cases)
+greenbuilding_train = greenbuildings[train_cases,]
+greenbuilding_test = greenbuildings[test_cases,]
+
+greenbuilding_test = na.omit(greenbuilding_test)
+greenbuilding_train = na.omit(greenbuilding_train)
+
+# Generate Model using Forward Selection
+lm_null = lm(Rent ~ 1, data = greenbuilding_train)
+lm_handmade = step(lm_null, direction = 'forward', 
+                   scope = ~(cluster + size + empl_gr + stories + age
+                               + renovated + green_rating + class_a + class_b)^2)
+```
+
+```{r Forward Selection Green Call, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center'}
+# So what is our model 
+getCall(lm_handmade)
+```
+
+Next, we tested the fitted model on multiple testing datasets and compared the error (Root Mean Sqaured Error) against a null model. 
+
+```{r Green Results Forward, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center'}
+# Determine how handmade model compared to baseline model ####
+rmse_vals = do(100)*{
+  
+  # Split into training and testing data
+  train_cases = sample.int(n, n_train, replace=FALSE)
+  test_cases = setdiff(1:n, train_cases)
+  greenbuilding_train = greenbuildings[train_cases,]
+  greenbuilding_test = greenbuildings[test_cases,]
+  
+  greenbuilding_test = na.omit(greenbuilding_test)
+  greenbuilding_train = na.omit(greenbuilding_train)
+  
+  # Predict
+  yhat_test_handmade = predict(lm_handmade, greenbuilding_test)
+  yhat_test_null = predict(lm_null, greenbuilding_test)
+  
+  # RMSE Values
+  c(rmse(greenbuilding_test$Rent, yhat_test_handmade), rmse(greenbuilding_test$Rent, yhat_test_null))
+}
+
+# How did we do?
+colnames(rmse_vals) = c('Handmade', 'Null')
+kable((round(colMeans(rmse_vals), 2)), caption = 'Average RMSE of Each Model') %>% 
+  kable_styling(latex_options = c('striped', 'hold_position'))
+```
+
+Next, Principle Components Analysis was used. As seen in the forward selection model, we split the data into a training and testing set. Below is the training set graphed by the first and second principle components and colored based on the green rating of the building. 
+
+```{r PCA initial, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center'}
+# Lets try another method --- PCA
+n = nrow(greenbuildings)
+n_train = round(0.8*n)
+n_test = n - n_train
+
+train_cases = sample.int(n, n_train, replace=FALSE)
+test_cases = setdiff(1:n, train_cases)
+greenbuilding_train = na.omit(greenbuildings[train_cases,])
+greenbuilding_test = na.omit(greenbuildings[-train_cases,])
+
+pr_green = prcomp(greenbuilding_train, scale = TRUE, center = TRUE)
+
+# Graph Inital Components
+components = pr_green$x
+greenbuilding_train$green_ratingCol =ifelse(greenbuilding_train$green_rating, "Non-Green Rated", "Green Rated")
+
+qplot(components[,1], components[,2], color = greenbuilding_train$green_ratingCol) + 
+  theme_bw() + 
+  labs(title = "First and Second Principle \n Components of the Training Data",
+       x = "Principle Component 1", 
+       y = "Principle Component 2", 
+       color = "Green Rating") +
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        legend.text = element_text(hjust = 0.5, size = 6),
+        legend.title = element_text(hjust = 0.5, size = 8, face = 'bold'),
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8))
+```
+
+The components then were projected onto the testing data. Below is the testing data plotted using the components from the training data. 
+
+```{r PCA projected, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center'}
+# Project onto the testing set 
+test.sc = scale(greenbuilding_test, center = pr_green$center)
+test.predicted = test.sc %*% pr_green$rotation
+
+greenbuilding_test$green_ratingCol = ifelse(greenbuilding_test$green_rating, "Non-Green Rating", "Green Rating")
+
+qplot(test.predicted[,1], test.predicted[,2], color = greenbuilding_test$green_ratingCol) +
+  theme_bw() +
+  labs(title = "First and Second Principle \n Components of the Testing Data",
+       x = "Principle Component 1", 
+       y = "Principle Component 2", 
+       color = "Green Rating") +
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        legend.text = element_text(hjust = 0.5, size = 6),
+        legend.title = element_text(hjust = 0.5, size = 8, face = 'bold'),
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8))
+```
+
+Conclusion:
+
+Both Forward Selection Linear Regression and PCA was used to determine the impact of a green rating on the rent price for a building. Using the forward selection linear regression we saw the model performed quite well out of sample with a RMSE = 1400 compared to the null of 1500. The model portrayed the isolated impact of the green building certificate as $5 per square foot. Meaning there are obvious economic benefits for attempting to attain a green building certificate, holding all other building features constant. 
+
+Next, to confirm the benefit of a green rated building, principle components analysis was used. The training and testing data looked very similar in reference to the relative location of green buildings (both on the left-side of the first component). The first principle component accounts for 15% of the variance and by adding the second principle component the cumulative variance accounted for increases to 30%. 
+
+
+(2) Effect of Police on Crime
+=============================
+
+1. 
+There are a couple different reasons why the relationship between crime and police cannot be easily interpretable from a simple regression.
+    a) There may be confounding variables that affect the results such as the population density of the city, amount of guns per capita, etc. All of the confounding variables would make the underlying affect of police on crime difficult to assess. 
+    b) There is an inherent problem with the regression. In a city with high crime, there are more cops than cities without crime. Therefore, the marginal affect of determining the effect of adding a cop is again is difficult to determine. 
+    
+2. 
+Due to problem described above, the underlying data had certain problems. Therefore, the researchers had to determine a method to see the effect of police holding the crime rate stable. To be able to achieve this they focused on days of 'high alert' (orange level for terrorist activity), which created more cop presence without the cop presence being determined by the level of crime. 
+What the researchers found was that police decreases the level of crime on average by using the high alert data. They took the study a level further by controlling for METRO ridership, and again found conclusive evidence that police presence does in fact lower crime rates. 
+
+3. 
+The researchers controlled for METRO ridership because there was a fear of another cofounding variable skewing the results of the study. The researchers were worried that due to the elevated level of the alert, less tourist and crowds were likely to be found, and thus a lower probability of a crime occurring. The researchers found that the tourists levels were not affected by the level of alert and the result was still statistically significant after accounting for the METRO ridership. 
+
+4. 
+The model has three main variables: alert level (encoded as a dummy variable with 0 being low and 1 being high), location (encoded as a categorical variable between a constant, District 1 and Other Districts) and Log(midday ridership). The model can be written as:
+crime = constant + HighAlert*District1 + HighAlert*Other Districts + Log(midday ridership)
+It can be seen that the high alert is a significant indicator of crime in District 1 but not in other districts. This makes sense because other districts are not Washington D.C. with alert levels and reported data. Since High Alert in District 1 was a negative value, it shows how an added cop does decrease crime by 2.621 crimes per day. 
+Furthermore, midday ridership is also significant with a positive value. This shows as midday ridership increases by 1% point (since it is on a log scale), crime increases by 2.477 per day at a 95% confidence level. 
+
+
+(3) Clustering and PCA
+======================
+
+Question: What is the best method of unsupervised learning to determine the color and quality of wine? To first determine how to best to distinguish wines by different chemical properties, let's take an initial look at the raw data. 
+
+First, let us look at the split between red and white wines. 
+
+```{r WinesColor Init, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center'}
+# Load Data 
+wineurl = 'https://raw.githubusercontent.com/jgscott/SDS323/master/data/wine.csv'
+wine = read.csv(url(wineurl))
+wine$color = ifelse(wine$color == 'red', 0, 1)
+wine_hist = wine
+
+# let's look at the initial data set and see distrubtion of red/white and quality
+ggplot(data= wine, mapping = aes(x = color)) +
+  geom_bar(color = 'black', fill = 'skyblue') +
+  theme_bw() + 
+  labs(title = 'Count of Red v. White Wine in Data Set', 
+       x = 'Type of Wine', 
+       y = 'Frequency', 
+       caption = 'Left bar is red wines \n Right bar is white wines') +
+  theme(axis.text.x = element_blank(), 
+        plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8))
+```
+
+We can see the split between red and white wines is overwhelmingly white wines (~75%). Next, we will look at the frequency of quality ratings by certified wine experts. 
+
+```{r WinesQual Init, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center'}
+ggplot(data = wine, mapping = aes(x = quality)) + 
+  geom_bar(color = 'black', fill = 'skyblue') +
+  theme_bw() + 
+  labs(title = 'Count of Quality of Wine in Data Set', 
+       x = 'Quality of Wine', 
+       y = 'Frequency') +
+  theme(axis.text.x = element_blank(), 
+        plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8)) + 
+  xlim(1,10)
+```
+
+The majority of experts rated the wines as a '5' or '6'. It is important to note that the lowest rated wine was a '3' with the highest rated wine being a '8'. 
+
+To be able to distinguish the red wines from the white wines, we will try two different dimension reduction techniques. We will begin with Principle Components Analysis. 
+
+```{r Wines Color PCA, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center'}
+# Let's try PCA
+pr_wine = prcomp(wine, scale. = TRUE, center = TRUE)
+
+# Graph Components
+components = pr_wine$x
+wine$colorCol = ifelse(wine$color == '0', 'Red', 'White')
+
+qplot(components[,1], components[,2], color = wine$colorCol) + 
+  theme_bw() + 
+  labs(title = "First and Second Principle Components of Wine Data",
+       x = "Principle Component 1", 
+       y = "Principle Component 2", 
+       color = "Color of Wine") +
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        legend.text = element_text(hjust = 0.5, size = 6),
+        legend.title = element_text(hjust = 0.5, size = 8, face = 'bold'),
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8))
+```
+
+After running the PCA, the first two components explain approximately 50% of the dataset, while the first three components explain approximately 63% of the dataset. Furthermore, the graph provides critical insight on PCA's ability to distinguish between the colors of the wines by clearly segmenting the into two different clusters. 
+
+To take this analysis a step further, we will now use PCA to distinguish the quality rating given by the expert wine tasters. 
+
+```{r Wines Quality1 PCA, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center'}
+
+# Can't really see
+wine$quality = factor(wine$quality, levels = 1:10)
+
+qplot(components[,1], components[,2], color = wine$quality) + 
+  theme_bw() + 
+  labs(title = "First and Second Principle Components of Wine Data",
+       x = "Principle Component 1", 
+       y = "Principle Component 2", 
+       color = "Quality of Wine") +
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        legend.text = element_text(hjust = 0.5, size = 6),
+        legend.title = element_text(hjust = 0.5, size = 8, face = 'bold'),
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8))
+```
+
+Unfortunately after plotting the first two components, it is hard to distinguish once cluster from another. Therefore, we attempted to plot the second and third component as this quality of the wines were a less significant feature of the dataset compared to the actual type of wine. 
+
+```{r Wines Quality2 PCA, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center'}
+
+# but can see some clustering with 2 and 3 component 
+qplot(components[,2], components[,3], color = wine$quality) + 
+  theme_bw() + 
+  labs(title = "Second and Third Principle Components of Wine Data",
+       x = "Principle Component 2", 
+       y = "Principle Component 3", 
+       color = "Quality of Wine") +
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        legend.text = element_text(hjust = 0.5, size = 6),
+        legend.title = element_text(hjust = 0.5, size = 8, face = 'bold'),
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8))
+```
+
+Next, we attempted the same analysis using a K-means clustering algorithm. We again tried the clustering on the color of the wine witha k = 2 (since we are expecting two clusters). 
+
+```{r Wines Color KMeans, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+# Now try clustering
+wine_hist_scaled = scale(wine_hist, center = TRUE, scale = TRUE)
+ecluster = eclust(wine_hist_scaled, 'kmeans', k = 2, nstart = 25)
+
+# Cluster Plots
+fviz_cluster(ecluster)
+```
+
+We can see the K-Means Clustering Algorithm clustered the two wines correctly for the most part, just as seen in the Principle Components Analysis. 
+
+Again, we tried the same analysis on the quality of wine. However, rather than using k = 10, as the number of clusters we used k = 6. This was due to the ratings of the wine experts only included ratings from 3 to 8 (6 unique values). 
+
+```{r Wines Quality KMeans, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+ecluster2 = eclust(wine_hist_scaled, 'kmeans', k = 6, nstart = 25)
+fviz_cluster(ecluster2)
+```
+
+The clustering for the quality of the wine was more difficult to ascertain. The clusters that are seen are more forced rather than natural breaks in the dataset. Therefore, we can conclude that the k-means clustering algorithm does a good job at clustering the different classes of wine but not necessarily the quality. 
+
+Finally, the last component of the analysis is to find an optimal number of clusters. To determine the optimal number of clusters, a gap statistic was used. Based off the analysis done using the gap statistic, the optimal number of clusters in the data set is k = 5.
+
+```{r Wines Clustering Graph, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+# Gap Statistic 
+ecluster3 = eclust(wine_hist_scaled, "kmeans", nstart = 25)
+fviz_gap_stat(ecluster3$gap_stat)
+```
+
+In conclusion, both methods PCA and k-means clustering did a good job at distinguishing the red wine from the white wine based on the chemical properties in the dataset. Both clearly placed the majority of the wines in the correct category. However, the k-means clustering did not clearly separate the data into six categories of the quality of wine. On the other hand, the PCA analysis was able to distinguish the quality of wine using the second and third components. It is clear on the PC2 v. PC3 graph that those with a lower value of PC2 and PC3 had a higher quality while those with a higher PC2 and PC3 had lower qualities. 
+
+(4) Market Segmentation
+=======================
+
+Our question is to determine different market segments that may be found through the data collected in the market-research study. The market-research study collected user tweet data that was grouped into categories based on the 'topic' of the tweet. 
+
+Before diving into methods of segmenting the data to find different market segments, lets take a look at the distribution of users tweet counts.
+
+```{r TweetGraph, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+social_marketing_url = 'https://raw.githubusercontent.com/jgscott/SDS323/master/data/social_marketing.csv'
+NutrientH20 = read.csv(url(social_marketing_url))
+
+NutrientH20wSum = NutrientH20
+NutrientH20wSum$Sum = rowSums(NutrientH20wSum[,2:36])
+
+# Initial Look at Distrubution of Tweets 
+ggplot(data = NutrientH20wSum, mapping = aes(x = Sum)) + 
+  geom_bar(color = 'black', fill = 'skyblue') +
+  theme_bw() + 
+  labs(title = 'Distrubution of Tweets by Twitter Users', 
+       x = 'Number of Tweets', 
+       y = 'Frequency') +
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8))
+```
+
+The distribution seems to be right skewed with a few large outliers on the right tail. Now to focus on segmenting the data, we will begin by using Principal Component's Analysis. 
+
+``````{r PCA Graph, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+
+# Let's try PCA
+pca_tweet = prcomp(NutrientH20[,2:36], scale = TRUE, center = TRUE)
+tweet_components = pca_tweet$x
+
+# Screeplot 
+pr_var = pca_tweet$sdev ^ 2
+pve = pr_var / sum(pr_var)
+kcluster10 = kmeans(NutrientH20[,2:36], 10, nstart = 25)
+kcluster10$cluster = factor(kcluster10$cluster, levels = 1:10)
+
+plot(pve, xlab = 'Principal Compoent', ylab = 'Proportion of Variance', ylim = c(0,.5), type = 'b')
+
+# Cum Plot
+plot(cumsum(pve),xlab = 'Principal Compoent', ylab = 'Cumulative Proportion of Variance', ylim = c(0,1), type = 'b')
+```
+
+It can be seen that the first two components represent appoximately a fifth of the total variance of the data. We will be focusing on the first two components for our analysis to find the major underlying segments in the data. 
+
+Let us begin by plotting the first and second components. 
+
+``````{r PCA1PC2 no, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+# Plot PCA
+qplot(tweet_components[,1], tweet_components[,2]) + 
+  theme_bw() + 
+  labs(title = "First and Second Principle Components of Tweet Data",
+       x = "Principle Component 1", 
+       y = "Principle Component 2") +
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        legend.text = element_text(hjust = 0.5, size = 6),
+        legend.title = element_text(hjust = 0.5, size = 8, face = 'bold'),
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8))
+```
+
+We can see a general funneling of pattern that can represent some strong correlations in users and their tweets. However, without being able to segment the data based on such clusters, the PCA does not provide us much quantifiable market segments. 
+
+Let us replot the same graph, but color the points using a k-means clustering algorithm with a k value of 10. A k value of 10 was chosen due to the gap statistic graph below provided insight on its potential as the optimal number of clusters in the data set. 
+
+```{r Gap, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+# Let's Try Clustering 
+tweets_scaled = scale(NutrientH20[,2:36], center = TRUE, scale = TRUE)
+tweetcluster = eclust(tweets_scaled, 'kmeans', nstart = 25)
+
+fviz_gap_stat(tweetcluster$gap_stat)
+
+# Plot PCA w/ clusters
+qplot(tweet_components[,1], tweet_components[,2], color = kcluster10$cluster) + 
+  theme_bw() + 
+  labs(title = "First and Second Principle Components of Tweet Data",
+       x = "Principle Component 1", 
+       y = "Principle Component 2") +
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        legend.text = element_text(hjust = 0.5, size = 6),
+        legend.title = element_text(hjust = 0.5, size = 8, face = 'bold'),
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8))
+```
+
+The coloring of the clustering allows us to see more clearly the different user groups. A cleaner representation of these user groups could be found as follows:
+
+```{r ClusterGraph Tweet, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+
+fviz_cluster(kcluster10, data = NutrientH20[,2:36], geom = 'point', 
+             stand = FALSE, ellipse.level = 'norm') +
+  theme_bw() +
+  ggtitle(label = 'User Clusters')
+```
+
+Now knowing the different user groups that are similar based off tweet data, we can now define each of these user clusters as a different market segment. Knowing each market segment has many potential upsides in a business perspective. An example of such is in marketing where you want to market similar items across a user segment that has a higher propensity to purchase such an item. 
