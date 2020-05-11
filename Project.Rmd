@@ -1,0 +1,584 @@
+---
+title: "Lending Club Project - SDS 323"
+author: "Alt Nayani and Conor McKinley"
+date: "5/11/2020"
+output: pdf_document
+---
+
+```{r Libraries,echo=FALSE, warning=FALSE, message=FALSE}
+# Set Seed
+set.seed(10)
+
+# Load Libraries 
+library(readr)
+library(mosaic)
+library(tidyverse)
+library(rmarkdown)
+library(FNN)
+library(tinytex)
+library(foreach)
+library(gridExtra)
+library(grid)
+library(png)
+library(downloader)
+library(grDevices)
+library(corrplot)
+library(scales)
+library(knitr)
+library(kableExtra)
+library(stats)
+library(LICORS)
+library(cluster)
+library(fpc)
+library(factoextra)
+library(gamlr)
+library(dplyr)
+options(scipen = 10)
+
+# Helper Function
+rmse = function(y, ypred) {
+  sqrt(mean(data.matrix((y-ypred)^2)))
+}
+
+```
+
+```{r LoadData, echo = FALSE, warning = FALSE, message=FALSE}
+#Load Data 
+lendingclub = read.csv("data/2016Q1Data.csv", header = TRUE)
+```
+
+```{r HouseKeepingCode, echo = FALSE, warning = FALSE, message=FALSE}
+# Make some new variables
+lendingclub$fico = (lendingclub$fico_range_high + lendingclub$fico_range_low)/2
+
+lendingclub$profit = lendingclub$total_pymnt - lendingclub$funded_amnt
+
+lendingclub$return = lendingclub$profit / lendingclub$funded_amnt
+
+# Filter Data 
+lendingclub = lendingclub %>% 
+  filter(term == " 36 months")
+
+lendingclub = filter(lendingclub, lendingclub$grade != 'E' & lendingclub$grade != 'E' & lendingclub$grade != 'F' & lendingclub$grade != 'G')
+
+# Factor Variables 
+lendingclub = lendingclub %>% 
+  mutate(emp_length_f = factor(emp_length, levels = c("< 1 year", "2 years", "3 years", "4 years", "5 years", "6 years", "7 years", "8 years", "9 years", "10+ years")))
+lendingclub$emp_length = NULL
+
+lendingclub = lendingclub %>% 
+  mutate(grade = factor(grade, levels = c('A', 'B', 'C', 'D', 'E', 'F', 'G')))
+```
+
+
+Abstract:
+=========
+
+**About Lending Club:** Lending Club is a platform that matches those requesting loans to investors wishing to fund those loans. The purpose the loans range to fund automobile purchases, mortgage payments, or debt consolidations. After providing adequate amounts of data, Lending Club provides a 'rating' from A to G, which determines the applicable interest rate for the specified loan. These loans are then available for investors to fund. Each loan may be funded fully by one investor or by multiple investors that seek to gain exposure to the specific loan.
+
+&nbsp;
+&nbsp;
+
+**Lending Club Diversification:** While funding individual loans are an option on Lending Club, the majority of investors fund a diversified basket of notes to diversify any idiosyncratic risks of an individual loan. The concept here is: if an investor were to fund one large loan and the loan defaults, then the investor loses all the capital. However, if an investor funds small amount of a large portfolio of loans, then an single loan cannot bankrupt the portfolio and reduces the overall variance of returns. Lending Club's diversified investing program has historically returned 3.77% to 6.01% annually (14.81% over a 3-year period), which we will use as the null performance metric we are attempting to beat. 
+
+&nbsp;
+&nbsp;
+
+
+**Goal of Project:** The goal of the project is to be able to identify a portfolio that outperforms the 'default' diversified portfolio of loans that Lending Club offers. Definitionally, we will define outperformance as the ability to earn an additional percentage return (profit over the funded amount). While in the traditional sense, investors will care about the riskiness and variability of returns of the different strategies we try, we can assume the riskiness of the underlying loans are equal in each strategy since all loans will be A-D quality and of 36 month term.  
+
+To be able to maintain credibility in the performance of the project, we will split the data set into a training and testing split then determine the appropriate outputs of the results. 
+
+
+Data Cleaning and Variables of Interest:
+========================================
+
+The data specifically looked at which loans originated in Q1 2016 with a term of 36 months. All 60 month loans were excluded due to the possible on-going nature of the loans. Furthermore, Lending Club's diversified portfolio contains only A through D 'grade' loans; therefore, to make an apple to apples comparison, we will exclude any loan that is not A through D. 
+
+Prior to running any supervised learning techniques, we will view the initial variables of interests to better understand any patterns and the raw data. 
+
+First, we will look at the distribution of key variables in the dataset such as: grades, funding amount, FICO score, delinquencies in the last 2 years, employment length and verification status. 
+```{r VariablesInitial, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+# Grade
+ggplot(data = lendingclub) + 
+  geom_bar(mapping = aes(x = grade), color = 'black', fill = 'skyblue') +
+  labs(title = "Distrubution of Loan 'Grade'",
+       x = "Loan Grade", 
+       y = "Frequency") + 
+  theme_bw() + 
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8))
+
+# Funding Amount 
+ggplot(data = lendingclub) + 
+  geom_histogram(mapping = aes(x = funded_amnt), bins = 30, color = 'black', fill = 'skyblue') +
+  labs(title = "Distrubution of Loan Funded Amount",
+       x = "Loan Funded Amount ($)", 
+       y = "Frequency") + 
+  theme_bw() + 
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8))
+
+# FICO
+ggplot(data = lendingclub) + 
+  geom_histogram(mapping = aes(x = fico), bins = 30, color = 'black', fill = 'skyblue') +
+  labs(title = "Distrubution of FICO Scores",
+       x = "FICO Score", 
+       y = "Frequency") + 
+  theme_bw() + 
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8))
+
+# Delinquencies in Last 2 Years 
+ggplot(data = lendingclub) + 
+  geom_bar(mapping = aes(x = delinq_2yrs), color = 'black', fill = 'skyblue') +
+  labs(title = "Number of Delinquencies in Last 2 Years",
+       x = "Number of Delinquencies", 
+       y = "Frequency") + 
+  theme_bw() + 
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8)) +
+  xlim(0, 5)
+
+# Employement Length
+ggplot(data = lendingclub) + 
+  geom_bar(mapping = aes(x = emp_length_f), color = 'black', fill = 'skyblue') +
+  labs(title = "Distrubution of Employement Lengths",
+       x = "Employement Lengths (Years)", 
+       y = "Frequency") + 
+  theme_bw() + 
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8), 
+        axis.text.x = element_text(size = 5))
+
+# Verification Status 
+ggplot(data = lendingclub) + 
+  geom_bar(mapping = aes(x = verification_status), color = 'black', fill = 'skyblue') +
+  labs(title = "Distrubution of Verification Status",
+       x = 'Verification Status', 
+       y = "Frequency") + 
+  theme_bw() + 
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8))
+```
+
+Now we will look at the variables that we are trying to predict: profit and % return (defined as profit over funded amount):
+
+```{r ProfitInitial, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+# Profit 
+ggplot(data = lendingclub) + 
+  geom_histogram(mapping = aes(x = profit), color = 'black', fill = 'skyblue', bins = 20) +
+  labs(title = "Distrubution of Profit from Loans",
+       x = 'Profit ($)', 
+       y = "Frequency") + 
+  theme_bw() + 
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8))
+
+# Profit 
+ggplot(data = lendingclub) + 
+  geom_histogram(mapping = aes(x = return), color = 'black', fill = 'skyblue', bins = 20) +
+  labs(title = "Distrubution of Return from Loans",
+       x = 'Return (%)', 
+       y = "Frequency", 
+       caption = 'Red vertical line represents average return of "invest in all loan" portfolio \n the dark blue vertical line represents the average return of the Lending Club diversified portfolio') + 
+  theme_bw() + 
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8)) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) + 
+  geom_vline(xintercept = .1513, linetype = 'dashed', color = 'darkblue', size = 1) +
+  geom_vline(xintercept = mean(lendingclub$return), linetype = 'dashed', color = 'red', size = 1)
+```
+
+The return that is shown above is a simple equal investment in all loans available in Lending Club. We can see that the return is centered slightly positive and highly variable with returns as low as -100% and as high as +38%. Furthermore, the average return is 6% over a 3 year period, less than the annualized return of 4.81% quoted by Lending Club (15.1% over a three year period).  
+
+&nbsp;
+&nbsp;
+
+Linear Regression:
+===================
+
+We will begin by using linear regression to predict returns of loans originated on the Lending Club platform. 
+
+First, we will begin by attempting a simple linear regression with a list of 30 variables that seem promising. All variables included were individually selected to avoid any data that would not be available at the time of the loan origination. 
+
+Furthermore, we split the dataset into a training and testing split over multiple iterations to get a low variance estimate of our results. 
+
+The overall model performed pretty terribly in-sample with an average R-squared of 0.9%. 
+
+Below you can see the predicted returns based of the simple linear model:
+
+```{r LinearModel, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE, results = FALSE}
+
+take_two = subset(lendingclub, select = c(loan_amnt, int_rate, installment, grade, 
+                                          sub_grade, emp_length_f, home_ownership, annual_inc, 
+                                          verification_status, purpose, dti, delinq_2yrs, 
+                                          fico_range_low, fico_range_high, inq_last_6mths, 
+                                          mths_since_last_delinq, open_acc, pub_rec, 
+                                          revol_bal, revol_util, total_acc, initial_list_status, 
+                                          total_pymnt, application_type, pub_rec_bankruptcies, 
+                                          tax_liens, funded_amnt))
+
+take_two = take_two[complete.cases(take_two),]
+
+#make some new variables
+take_two$fico = (take_two$fico_range_high + take_two$fico_range_low)/2
+take_two$profit = take_two$total_pymnt - take_two$funded_amnt
+take_two$returns = take_two$profit / take_two$funded_amnt
+
+take_two$int_rate = as.numeric(take_two$int_rate)
+take_two$revol_util = as.numeric(take_two$revol_util)
+
+#get rid of the now unnecessary variables
+take_two$total_pymnt = take_two$funded_amnt = take_two$emp_length = take_two$profit =
+  take_two$fico_range_high = take_two$fico_range_low = NULL
+
+#training and test
+n = nrow(take_two)
+n_train = floor(.8* n)
+n_test = n - n_train
+
+iterationdf = do(5)*{
+  training_cases = sample.int(n, n_train, replace = FALSE)
+  train = take_two[training_cases,]
+  test = take_two[-training_cases,]
+  
+  # Full model
+  full = lm(returns ~ (. - returns), data = train)
+  fullpredicted = predict(full, newdata = test)
+}
+```
+
+```{r LinearModelPredicted, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+fullpredicted = as.data.frame(fullpredicted)
+
+# Predicted Returns
+ggplot(data = fullpredicted) + 
+  geom_histogram(mapping = aes(x = fullpredicted), color = 'black', fill = 'skyblue', bins = 20) +
+  labs(title = "Predicted Distrubution of Return of \n Loans using Linear Regression",
+       x = 'Return (%)', 
+       y = "Frequency") + 
+  theme_bw() + 
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8)) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1))
+```
+
+All loans that we predict to be harmful to the portfolio (negative returns), we will not invest in them. Therefore, we will compare the loans that we projected with positive returns to the actual returns. The distribution those loans can be seen below:
+
+```{r LinearModelResults, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+
+fullpredicted$actual = test$returns
+fullpredicted$actual = ifelse(fullpredicted$fullpredicted < 0, 0, fullpredicted$actual)
+
+# Actual Returns 
+ggplot(data = fullpredicted) + 
+  geom_histogram(mapping = aes(x = actual), color = 'black', fill = 'skyblue', bins = 20) +
+  labs(title = "Actual Distrubution of Return of \n Loans using Linear Regression",
+       x = 'Return (%)', 
+       y = "Frequency", 
+       caption = 'Dark Blue line is Lending Club 3 Year Return \n Green line is Linear Regression Strategy') +
+  theme_bw() + 
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8)) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) +
+  geom_vline(xintercept = .1513, linetype = 'dashed', color = 'darkblue', size = 1) + 
+  geom_vline(xintercept = mean(fullpredicted$actual), linetype = 'dashed', color = 'green', size = 1)
+
+```
+
+Finally, we will look at the predicted returns v. the actual returns on a scatterplot: 
+```{r LinearModelScatter, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+# Plot of Predicted v. Acutal Returns 
+ggplot(fullpredicted)+
+  geom_point(mapping = aes(x = fullpredicted, y = actual), color = 'skyblue', alpha = 1/5) + 
+  labs(title = "Predicted vs. Actual Returns \n using Linear Regression Model", 
+       x = "Predicted Returns (%)", 
+       y = "Actual Returns (%)")+
+  theme_bw() +
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8)) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) + 
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1))
+```
+
+The next type of linear regression we will look at is a regularization model that fits the training data by trying to minimize the error through addition and subtraction of terms and interactions. Similar to the other linear regression model, we split the dataset into training and testing splits as well as removed any lookahead bias in the data. 
+
+The regularization model had an average R-squared of 0.8%, a tenth of a percentage point below the R-squared of the simple linear model. 
+
+Below we can see the distribution of projected returns: 
+
+```{r RegularizationModel, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE, results = FALSE}
+stepiterdf = do(5)*{
+  
+  # Training and Test 
+  training_cases = sample.int(n, n_train, replace = FALSE)
+  train = take_two[training_cases,]
+  test = take_two[-training_cases,]
+  
+  # Null Model
+  null = lm(returns ~ 1, data = train)
+  
+  #step model
+  forward = step(null, direction="forward", scope = formula(full))
+  forwardpredicted = predict(forward, newdata = test)
+}
+```
+
+```{r RegularizationPredicted, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+
+forwardpredicted = as.data.frame(forwardpredicted)
+
+# Predicted Returns
+ggplot(data = forwardpredicted) + 
+  geom_histogram(mapping = aes(x = forwardpredicted), color = 'black', fill = 'skyblue', bins = 20) +
+  labs(title = "Predicted Distrubution of Return of \n Loans using Step Regularization Regression",
+       x = 'Return (%)', 
+       y = "Frequency") + 
+  theme_bw() + 
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8)) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1))
+```
+
+Similarly, we removed any loans with a projected negative return and compared the remaining loans to the actual returns. Below is the distribution of how we performed out of sample: 
+
+```{r RegularizationActual, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+forwardpredicted$actual = test$returns
+forwardpredicted$actual = ifelse(forwardpredicted$forwardpredicted < 0, 0, forwardpredicted$actual)
+
+# Actual Returns 
+ggplot(data = forwardpredicted) + 
+  geom_histogram(mapping = aes(x = actual), color = 'black', fill = 'skyblue', bins = 20) +
+  labs(title = "Actual Distrubution of Return of \n Loans using Step Regularization Regression",
+       x = 'Return (%)', 
+       y = "Frequency", 
+       caption = 'Dark Blue line is Lending Club 3 Year Return \n Green line is Linear Regression Strategy') +
+  theme_bw() + 
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8)) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) +
+  geom_vline(xintercept = .1513, linetype = 'dashed', color = 'darkblue', size = 1) + 
+  geom_vline(xintercept = mean(forwardpredicted$actual), linetype = 'dashed', color = 'green', size = 1)
+```
+
+Finally, we included a scatterplot of the actual vs. predicted return of the strategy. As seen earlier with the simple linear model, there is no distinct pattern and the model has almost no ability to predict the return of the actual loan. 
+
+```{r RegularizationScatter, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+
+# Plot of Predicted v. Actual 
+ggplot(data = forwardpredicted)+
+  geom_point(mapping = aes(x = forwardpredicted, y = actual), color = 'skyblue', alpha = 1/5) + 
+  labs(title = "Predicted vs. Actual Returns \n using Step Regularization Model", 
+       x = "Predicted Returns (%)", 
+       y = "Actual Returns (%)")+
+  theme_bw() +
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8)) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) + 
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1))
+```
+
+To conclude this section, we can see both the simple linear model and regularization model did a poor job at predicting the return of the loans. We underperformed the Lending Club diversified return of ~15% over a 3-year period, compared to our ~6% return over a 3-year period. 
+
+&nbsp;
+&nbsp;
+
+Principal Components Analysis (PCA):
+====================================
+
+Next we will be using Principal Components Analysis to better predict returns of specific loans, then invest in loans that are predicted to be profitable and avoid predicted unprofitable loans. Since we have a large number of features in the dataset, a dimensionality reduction technique such as PCA could be useful to determine the best indicators of performance. 
+
+We will begin by splitting the dataset into a training and testing dataset then running PCA on the training data. Furthermore, we will remove any variables that would not have been known at the origination of the loan, removing any lookahead bias. Let us plot the summary of PCA and the first three components against each other. 
+
+```{r PCAIntro, echo = FALSE, fig.height = 3.5, fig.width = 5, fig.align = 'center', warning=FALSE}
+#PCA Analysis
+pca_df = as.data.frame(cbind(lendingclub$loan_amnt, lendingclub$funded_amnt, lendingclub$int_rate, lendingclub$installment, lendingclub$grade, lendingclub$sub_grade, lendingclub$home_ownership, lendingclub$title, lendingclub$open_acc, lendingclub$pub_rec, lendingclub$revol_util, lendingclub$total_acc, lendingclub$annual_inc, lendingclub$verification_status, lendingclub$dti, lendingclub$delinq_2yrs,  lendingclub$emp_length_f, lendingclub$fico,lendingclub$profit, lendingclub$return))
+
+n = nrow(pca_df)
+n_train = round(.8*n)
+n_test = n - n_train
+
+train_cases = sample.int(n, n_train, replace=FALSE)
+test_cases = setdiff(1:n, train_cases)
+
+pca_df_train = as.data.frame(na.omit(pca_df[train_cases,]))
+pca_df_test = as.data.frame(na.omit(pca_df[-train_cases,]))
+colnames(pca_df_train) = c('loan_amnt', 'funded_amnt', 'int_rate', 'installment', 'grade', 'sub_grade', 'home_ownership', 'title', 'open_account', 'public_record', 'revol_util', 'total_account', 'annual_inc', 'verification_status', 'dti', 'delinq_2yrs', 'emp_length', 'fico', 'profit', 'return')
+colnames(pca_df_test) = c('loan_amnt', 'funded_amnt', 'int_rate', 'installment', 'grade', 'sub_grade', 'home_ownership', 'title', 'open_account', 'public_record', 'revol_util', 'total_account', 'annual_inc', 'verification_status', 'dti', 'delinq_2yrs', 'emp_length', 'fico', 'profit', 'return')
+
+pr_lend = prcomp(pca_df_train[,1:18], scale = TRUE, center = TRUE)
+pca_df_train$returnCol = ifelse(pca_df_train[,20] >= 0, "Profitable", "Unprofitable")
+
+components = pr_lend$x
+
+# Proportion of Variance Plot 
+pr_var = pr_lend$sdev ^ 2 
+pve = pr_var/ sum(pr_var)
+
+plot(pve, xlab = 'Principal Compoent', ylab = 'Proportion of Variance', ylim = c(0,.5), type = 'b')
+
+# Cum Plot
+plot(cumsum(pve),xlab = 'Principal Compoent', ylab = 'Cumulative Proportion of Variance', ylim = c(0,1), type = 'b')
+
+
+# Plot Components
+qplot(components[,1], components[,2], color = pca_df_train$returnCol) + 
+  theme_bw() + 
+  labs(title = "First and Second Principal \n Components of the Training Data",
+       x = "Principal Component 1", 
+       y = "Principal Component 2")+
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        legend.text = element_text(hjust = 0.5, size = 6),
+        legend.title = element_text(hjust = 0.5, size = 8, face = 'bold'),
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8)) +
+  labs(colour = 'Return')
+
+qplot(components[,1], components[,3], color =pca_df_train$returnCol) + 
+  theme_bw() + 
+  labs(title = "First and Third Principal \n Components of the Training Data",
+       x = "Principal Component 1", 
+       y = "Principal Component 2")+
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        legend.text = element_text(hjust = 0.5, size = 6),
+        legend.title = element_text(hjust = 0.5, size = 8, face = 'bold'),
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8)) + 
+  labs(colour = 'Return')
+
+qplot(components[,2], components[,3], color =pca_df_train$returnCol) + 
+  theme_bw() + 
+  labs(title = "Second and Third Principal \n Components of the Training Data",
+       x = "Principal Component 1", 
+       y = "Principal Component 2")+
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        legend.text = element_text(hjust = 0.5, size = 6),
+        legend.title = element_text(hjust = 0.5, size = 8, face = 'bold'),
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8))+
+  labs(colour = 'Return')
+```
+
+As we can see, the components do not do a great job of identify profitable vs. unprofitable loans with the variables present. Next, we can create a linear model that regresses the principal components (including interactions) on percent return of the loans. The first ten principals resulted in approximately 2% R-squared for return. We then applied the PCA model and regression to the testing data set. 
+
+Below we can see the distribution of expected returns based on the PCA analysis: 
+
+```{r PCAExpReturn, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+# Regress PCA1 to PCA3 to determine profit 
+pcalmdf = as.data.frame(cbind(components, pca_df_train$return))
+colnames(pcalmdf) = c('PC1', 'PC2', 'PC3', 'PC4', 'PC5', 'PC6', 'PC7', 'PC8', 'PC9', 'PC10', 'PC11','PC12', 'PC13', 'PC14', 'PC15', 'PC16', 'PC17', 'PC18', 'return')
+pcalm = lm(return~(PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10)^10, data = pcalmdf)
+
+# Apply PCA on testing data 
+test.sc = scale(pca_df_test[,1:18], center = pr_lend$center)
+test.predicted = as.data.frame(test.sc %*% pr_lend$rotation)
+pca_df_test$returnCol = ifelse(pca_df_test[,18] >= 0, "Profitable", "Unprofitable")
+
+predictedpca = predict(pcalm, newdata = test.predicted)
+
+avgreturnpca = as.data.frame(predictedpca)
+colnames(avgreturnpca) = 'return'
+
+avgreturnpca$adjreturn=ifelse(avgreturnpca$return < -1, -1, avgreturnpca$return)
+avgreturnpca$adjreturn=ifelse(avgreturnpca$return > 1, 1, avgreturnpca$adjreturn)
+
+
+# Expectation of Return
+ggplot(data = avgreturnpca) + 
+  geom_histogram(mapping = aes(x = adjreturn), color = 'black', fill = 'skyblue', bins = 20) +
+  labs(title = "Distrubution of Expected \n Return from Loans using PCA",
+       x = 'Return (%)', 
+       y = "Frequency") + 
+  theme_bw() + 
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8)) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1), limits = c(-.25, .25))
+```
+
+Since we are interested only in loans that we expect to be profitable, we will test our results only on the expected positive return loans. We can see below how we would have done if we invested in loans based on the PCA analysis. 
+
+```{r PCAResults, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+# How did we actually do 
+resultsdfpca = cbind(avgreturnpca$adjreturn, pca_df_test$return)
+colnames(resultsdfpca) = c('PCAPredicted', 'Actual')
+resultsdfpca = as.data.frame(resultsdfpca)
+resultsdfpca$Actual = ifelse(resultsdfpca$`PCAPredicted` <= 0, resultsdfpca$Actual == 0, resultsdfpca$Actual)
+
+# Actual Return of those Invested using PCA
+ggplot(data = resultsdfpca) + 
+  geom_histogram(mapping = aes(x = Actual), color = 'black', fill = 'skyblue', bins = 20) +
+  labs(title = "Actual Distrubution of Return \n from Loans using PCA",
+       x = 'Return (%)', 
+       y = "Frequency", 
+       caption = 'Dark Blue line is Lending Club 3 Year Return, Red line is "invest in all" strategy, \n Green line is PCA strategy')+
+  theme_bw() + 
+  theme(plot.title = element_text(face='bold.italic', hjust = 0.5, size = 9),
+        plot.caption = element_text(hjust = 0.5, size = 6), 
+        axis.title.x = element_text(face = 'bold', size = 8), 
+        axis.title.y = element_text(face = 'bold', size = 8)) +
+  geom_vline(xintercept = .1513, linetype = 'dashed', color = 'darkblue', size = .25) +
+  geom_vline(xintercept = mean(lendingclub$return), linetype = 'dashed', color = 'red', size = .25) + 
+  geom_vline(xintercept = mean(resultsdfpca$Actual), linetype = 'dashed', color = 'purple', size = .25) + 
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1))
+
+```
+
+The PCA strategy underperformed  the 'invest in all' strategy and the Lending Club portfolio by over 7%. Furthermore, the PCA underperformed both Linear Regression strategies. 
+
+&nbsp;
+&nbsp;
+
+Conclusion:
+===========
+
+The goal of the project was to be able to beat the diversified program offered by Lending Club based on the data available to us at the origination of the loan. Below is the summary of our results:
+
+```{r Summary, echo = FALSE, fig.height = 3.5, fig.width = 3.5, fig.align = 'center', warning=FALSE}
+# Summary 
+averagereturnsummary = c(.1513, mean(lendingclub$return), mean(fullpredicted$actual), mean(forwardpredicted$actual), mean(resultsdfpca$Actual))
+averagereturnsummary = as.data.frame(averagereturnsummary)
+colnames(averagereturnsummary) = 'Avg. Return'
+averagereturnsummary = t(averagereturnsummary)
+colnames(averagereturnsummary) = c('Lending Club Diversified', 'Invest All Strategy', 'Simple Linear Regression', 'Regularization Model', 'PCA')
+
+kable(round(averagereturnsummary, 4), caption = 'Return per Strategy') %>% 
+  kable_styling(latex_options = c('striped', 'scale_down', 'hold_position'))
+```
+
+
+Overall, we can see that neither the linear models or the Principal Component Analysis was able to outperform the Lending Club diversified program. On average, the PCA was the worst-performing strategy followed by the invest in all strategy. Of our models, the regularization performed the best at a 6.57% return over a 3-year period. 
+
+We can conclude that we cannot beat the Lending Club strategy. We believe there are a couple of reasons for this. First, Lending Club has a team of professionally staffed employees that selectively chose loans to be included in their portfolio. While we are Finance students, we do not think we are able to accurately determine undervalued loans by looking individually at loans. Secondly, we were unable to match the percent allocation to each 'grade' of loan equivalently to Lending Club. This may provide a rationale for the lower return, since we may be over allocating to 'D' grade loans that may create a loss of capital or over allocating to 'A' grade loans and not getting enough risk thus return in our portfolio. 
+
+We can conclude that Lending Club has some expertise in investing in a loan portfolio as opposed to a retail investor looking to outperform the market. 
